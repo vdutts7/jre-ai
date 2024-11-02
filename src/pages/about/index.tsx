@@ -42,7 +42,7 @@ Under the hood, it uses:
 - [Vercel](https://vercel.com) - Hosting and API functions
 - [Next.js](https://nextjs.org) - React web framework
 
-We use Node.js and the [YouTube API v3](https://developers.google.com/youtube/v3/getting-started) to fetch the videos of our target playlist. In this case, we're focused on the [JRE Podcast Episodes Playlist](https://www.youtube.com/watch?v=fRyyTAs1XY8&list=PLk1Sqn_f33KuWf3tW9BBe_4TP7x8l0m3Tl), which contains 2210 videos at the time of writing.
+We use Node.js and the [YouTube API v3](https://developers.google.com/youtube/v3/getting-started) to fetch the videos of our target playlist. In this case, we're focused on the [JRE Podcast Episodes Playlist](https://www.youtube.com/playlist?list=PLk1Sqn_f33KuWf3tW9BBe_4TP7x8l0m3T), which contains 2210 videos at the time of writing.
 
 \`\`\`bash
 npx tsx src/bin/resolve-yt-playlist.ts
