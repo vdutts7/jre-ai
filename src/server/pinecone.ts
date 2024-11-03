@@ -1,22 +1,47 @@
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
+
 import { Pinecone } from '@pinecone-database/pinecone'
 import pMap from 'p-map'
 
 import * as types from './types'
 import { getEmbeddingsForVideoTranscript } from './openai'
 
+const CHECKPOINT_DIR = 'checkpoints'
+const getCheckpointPath = (playlistId: string) =>
+  path.join(CHECKPOINT_DIR, `${playlistId}.json`)
+
+async function saveCheckpoint(playlistId: string, processedIds: string[]) {
+  await fs.writeFile(
+    getCheckpointPath(playlistId),
+    JSON.stringify(processedIds, null, 2),
+    'utf-8'
+  )
+}
+
+// Helper function to chunk array into smaller pieces
+function chunkArray<T>(array: T[], chunkSize: number): T[][] {
+  const chunks = []
+  for (let i = 0; i < array.length; i += chunkSize) {
+    chunks.push(array.slice(i, i + chunkSize))
+  }
+  return chunks
+}
+
 export async function upsertVideoTranscriptsForPlaylist(
   playlist: types.PlaylistDetailsWithTranscripts,
   {
     openai,
     pinecone,
+    processedVideoIds = [],
     concurrency = 1
   }: {
     openai: types.OpenAIApi
     pinecone: Pinecone
+    processedVideoIds?: string[]
     concurrency?: number
   }
 ) {
-  // Initialize or connect to the Pinecone index
   const index = pinecone.index(process.env.PINECONE_INDEX_NAME)
 
   const videos = playlist.playlistItems
@@ -24,11 +49,16 @@ export async function upsertVideoTranscriptsForPlaylist(
       const id = playlistItem.contentDetails.videoId
       if (!id) return
 
+      // Skip already processed videos
+      if (processedVideoIds.includes(id)) {
+        console.log(`Skipping already processed video: ${id}`)
+        return
+      }
+
       const title = playlistItem.snippet.title
       if (!title) return
 
       const transcript = playlist.transcripts[id]
-
       if (!transcript) return
 
       return {
@@ -51,15 +81,7 @@ export async function upsertVideoTranscriptsForPlaylist(
             openai
           })
 
-          // Debugging the structure of videoEmbeddings
-          console.log(
-            `Embedding structure for video ${video.id}:`,
-            videoEmbeddings
-          )
-
-          // Extract only `values` arrays from each embedding object
           const vectors = videoEmbeddings.map((embeddingObj, i) => {
-            // Ensure the object has `values` array
             if (
               !Array.isArray(embeddingObj.values) ||
               !embeddingObj.values.every(Number.isFinite)
@@ -72,17 +94,34 @@ export async function upsertVideoTranscriptsForPlaylist(
             }
 
             return {
-              id: `${video.id}-${i}`, // Unique ID for each vector
-              values: embeddingObj.values // Only the values array
+              id: `${video.id}-${i}`,
+              values: embeddingObj.values
             }
           })
 
+          const CHUNK_SIZE = 100 // Adjust based on your average vector size
+
           console.log(
-            `Upserting ${vectors.length} vectors for video ${video.id}`
+            `Upserting ${vectors.length} vectors for video ${video.id} in chunks`
           )
 
-          // Upsert vectors into the index
-          await index.upsert(vectors)
+          const vectorChunks = chunkArray(vectors, CHUNK_SIZE)
+
+          for (const chunk of vectorChunks) {
+            try {
+              await index.upsert(chunk)
+              console.log(
+                `Successfully upserted chunk of ${chunk.length} vectors`
+              )
+            } catch (err) {
+              console.error(`Error upserting chunk:`, err)
+              // Consider if you want to throw here or continue with next chunk
+            }
+          }
+
+          // Save progress after each successful video processing
+          processedVideoIds.push(video.id)
+          await saveCheckpoint(playlist.playlistId, processedVideoIds)
 
           return video
         } catch (err) {

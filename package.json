@@ -22,6 +22,7 @@
     "test:prettier": "prettier '**/*.{js,jsx,ts,tsx}' --check"
   },
   "dependencies": {
+    "@azure/openai": "^2.0.0-beta.2",
     "@google-cloud/storage": "^6.9.4",
     "@pinecone-database/pinecone": "^4.0.0",
     "@vercel/analytics": "^0.1.11",
