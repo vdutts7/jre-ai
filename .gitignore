@@ -50,5 +50,7 @@ next-env.d.ts
 out/
 output
 
+venv
+
 instructions.md
 out.html

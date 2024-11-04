@@ -41,18 +41,27 @@ async function main() {
   })
 
   const playlistId = process.env.YOUTUBE_PLAYLIST_ID
-  const playlistDetailsWithTranscripts = JSON.parse(
-    await fs.readFile(`out/${playlistId}.json`, 'utf-8')
-  )
+  const chunksDir = path.join('output', 'chunks')
+  const files = await fs.readdir(chunksDir)
 
   await ensureCheckpointDir()
   const processedVideoIds = await loadCheckpoint(playlistId)
 
-  await upsertVideoTranscriptsForPlaylist(playlistDetailsWithTranscripts, {
-    openai,
-    pinecone,
-    processedVideoIds
-  })
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+
+    console.log(`Processing chunk: ${file}`)
+    const chunkPath = path.join(chunksDir, file)
+    const playlistDetailsWithTranscripts = JSON.parse(
+      await fs.readFile(chunkPath, 'utf-8')
+    )
+
+    await upsertVideoTranscriptsForPlaylist(playlistDetailsWithTranscripts, {
+      openai,
+      pinecone,
+      processedVideoIds
+    })
+  }
 }
 
 main().catch((err) => {
