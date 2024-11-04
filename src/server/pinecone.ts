@@ -28,74 +28,48 @@ function estimateVectorSize(vector: any): number {
 
 function splitTranscript(
   transcript: types.Transcript,
-  chunkSize = 1000
+  maxChunkLength = 4000 // Conservative limit to stay under token limits
 ): types.Transcript[] {
-  if (!transcript) {
-    console.warn('Transcript is undefined')
+  if (!transcript?.parts?.length) {
+    console.warn('Invalid transcript:', transcript)
     return []
   }
 
-  if (!transcript.parts) {
-    console.warn(
-      `Transcript parts is undefined for video ${transcript?.videoId}`
-    )
-    return []
-  }
-
-  if (!Array.isArray(transcript.parts)) {
-    console.warn(
-      `Transcript parts is not an array for video ${transcript?.videoId}`
-    )
-    return []
-  }
-
-  if (transcript.parts.length === 0) {
-    console.warn(
-      `Transcript parts array is empty for video ${transcript?.videoId}`
-    )
-    return []
-  }
-
-  console.log('Processing transcript:', {
-    videoId: transcript.videoId,
-    partsLength: transcript.parts.length,
-    firstPart: transcript.parts[0]
-  })
-
-  const transcriptChunks: types.Transcript[] = []
+  const chunks: types.Transcript[] = []
   let currentChunk: types.TranscriptPart[] = []
-  let currentTextLength = 0
+  let currentLength = 0
 
-  transcript.parts.forEach((part) => {
-    if (!part?.text) {
-      console.warn(
-        `Invalid transcript part found in video ${transcript.videoId}:`,
-        part
-      )
-      return
-    }
+  for (const part of transcript.parts) {
+    if (!part?.text) continue
+
+    const partLength = part.text.length
 
     if (
-      currentTextLength + part.text.length > chunkSize &&
+      currentLength + partLength > maxChunkLength &&
       currentChunk.length > 0
     ) {
-      transcriptChunks.push({
+      // Save current chunk and start a new one
+      chunks.push({
         videoId: transcript.videoId,
         parts: currentChunk
       })
       currentChunk = []
-      currentTextLength = 0
+      currentLength = 0
     }
 
     currentChunk.push(part)
-    currentTextLength += part.text.length
-  })
-
-  if (currentChunk.length > 0) {
-    transcriptChunks.push({ videoId: transcript.videoId, parts: currentChunk })
+    currentLength += partLength
   }
 
-  return transcriptChunks
+  // Add the last chunk if it has any parts
+  if (currentChunk.length > 0) {
+    chunks.push({
+      videoId: transcript.videoId,
+      parts: currentChunk
+    })
+  }
+
+  return chunks
 }
 
 function createPayloadChunks(vectors: any[], maxPayloadSize: number): any[][] {
@@ -128,37 +102,57 @@ async function getEmbeddingsWithRetry({
   title,
   openai,
   maxRetries = 5,
-  retryDelay = 1000
+  retryDelay = 1000,
+  maxTokens = 8000 // OpenAI's token limit for embeddings
 }: {
   transcript: types.Transcript
   title: string
   openai: OpenAIApi
   maxRetries?: number
   retryDelay?: number
-}): Promise<any> {
-  let attempts = 0
-  let delay = retryDelay
+  maxTokens?: number
+}): Promise<any[]> {
+  // First split the transcript into smaller chunks
+  const chunks = splitTranscript(transcript)
+  let allEmbeddings: any[] = []
 
-  while (attempts < maxRetries) {
-    try {
-      const response = await openai.createEmbedding({
-        model: 'text-embedding-ada-002',
-        input: transcript.parts.map((part) => part.text).join(' ')
-      })
-      return response.data.data
-    } catch (error: any) {
-      if (error.response && error.response.status === 429) {
-        console.warn(`Rate limit hit, retrying in ${delay} ms...`)
-        await new Promise((resolve) => setTimeout(resolve, delay))
-        attempts += 1
-        delay *= 2
-      } else {
-        console.error(`Error while fetching embeddings:`, error)
-        throw error
+  for (const chunk of chunks) {
+    let attempts = 0
+    let delay = retryDelay
+
+    while (attempts < maxRetries) {
+      try {
+        const text = chunk.parts
+          .map((part) => part.text)
+          .join(' ')
+          .trim()
+        if (!text) continue
+
+        const response = await openai.createEmbedding({
+          model: 'text-embedding-ada-002',
+          input: text
+        })
+
+        allEmbeddings.push(...response.data.data)
+        break
+      } catch (error: any) {
+        if (error.response?.status === 429) {
+          console.warn(`Rate limit hit, retrying in ${delay}ms...`)
+          await new Promise((resolve) => setTimeout(resolve, delay))
+          attempts++
+          delay *= 2
+        } else {
+          console.error(
+            `Error while fetching embeddings:`,
+            error.response?.data || error
+          )
+          throw error
+        }
       }
     }
   }
-  throw new Error(`Failed to retrieve embeddings after ${maxRetries} attempts`)
+
+  return allEmbeddings
 }
 
 export async function upsertVideoTranscriptsForPlaylist(
@@ -177,10 +171,8 @@ export async function upsertVideoTranscriptsForPlaylist(
 ) {
   const index = pinecone.index(process.env.PINECONE_INDEX_NAME)
 
-  // Log playlist structure for debugging
   console.log('Playlist structure:', {
     itemCount: playlist.playlistItems.length,
-    firstItem: playlist.playlistItems[0],
     transcripts: Object.keys(playlist.transcripts).length
   })
 
@@ -188,11 +180,10 @@ export async function upsertVideoTranscriptsForPlaylist(
     .map((playlistItem) => {
       const id = playlistItem.contentDetails.videoId
       const title = playlistItem.snippet.title
-      const transcript = playlist.transcripts[id]
+      const transcriptData = playlist.transcripts[id]
 
-      // Log the current item details for deeper debugging
       console.log(
-        `Processing video - ID: ${id}, Title: ${title}, Transcript Exists: ${!!transcript}`
+        `Processing video - ID: ${id}, Title: ${title}, Transcript Exists: ${!!transcriptData}`
       )
 
       if (!id) return null
@@ -200,9 +191,19 @@ export async function upsertVideoTranscriptsForPlaylist(
         console.log(`Skipping already processed video: ${id}`)
         return null
       }
-      if (!title || !transcript) {
+      if (!title || !transcriptData || !transcriptData.transcript) {
         console.log(`Skipping video without title or transcript: ${id}`)
         return null
+      }
+
+      // Convert Python transcript format to our internal format
+      const transcript: types.Transcript = {
+        videoId: id,
+        parts: transcriptData.transcript.map((entry) => ({
+          text: entry.text,
+          start: entry.start.toString(),
+          dur: entry.duration.toString()
+        }))
       }
 
       return { id, transcript, title }
@@ -217,9 +218,44 @@ export async function upsertVideoTranscriptsForPlaylist(
       try {
         console.log(`Processing video: ${video.id} - ${video.title}`)
 
-        // ... (rest of the processing code remains unchanged)
+        // Get embeddings for the transcript
+        const embeddings = await getEmbeddingsWithRetry({
+          transcript: video.transcript,
+          title: video.title,
+          openai
+        })
+
+        // Create vectors from embeddings
+        const vectors = embeddings.map((embedding, i) => ({
+          id: `${video.id}:${i}`,
+          values: embedding.embedding,
+          metadata: {
+            title: video.title,
+            videoId: video.id,
+            text: video.transcript.parts[i].text,
+            start: video.transcript.parts[i].start
+          }
+        }))
+
+        // Split vectors into chunks to avoid payload size limits
+        const chunks = createPayloadChunks(vectors, MAX_PAYLOAD_SIZE)
+
+        // Upsert chunks to Pinecone
+        for (const chunk of chunks) {
+          await index.upsert(chunk)
+        }
+
+        // Save checkpoint
+        await saveCheckpoint(playlist.playlistId, [
+          ...processedVideoIds,
+          video.id
+        ])
+        processedVideoIds.push(video.id)
+
+        return video.id
       } catch (err) {
         console.warn(`Error processing video ${video.id}:`, err)
+        return null
       }
     },
     { concurrency }

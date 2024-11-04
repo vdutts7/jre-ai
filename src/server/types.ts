@@ -66,7 +66,7 @@ export interface PlaylistDetails {
 
 export interface PlaylistDetailsWithTranscripts extends PlaylistDetails {
   transcripts: {
-    [videoId: string]: Transcript
+    [videoId: string]: PythonTranscript
   }
 }
 
@@ -89,4 +89,15 @@ export type PineconeCaptionVector = {
 export type PineconeClient = PineconeClientGeneric<PineconeCaptionMetadata>
 export type PineconeVector = Vector<PineconeCaptionMetadata> & {
   metadata: PineconeCaptionMetadata
+}
+
+export interface PythonTranscriptEntry {
+  text: string
+  start: number
+  duration: number
+}
+
+export interface PythonTranscript {
+  videoId: string
+  transcript: PythonTranscriptEntry[]
 }
