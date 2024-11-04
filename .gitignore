@@ -48,6 +48,7 @@ next-env.d.ts
 
 # data dumps
 out/
+output
 
 instructions.md
 out.html
